@@ -26,10 +26,9 @@ const REQUIRED_FIELD = 'UF_CRM_1604662888308';
 const INITIAL_STAGE_ID = 'NEW';
 const MAX_PAGES = 10000;
 
-// Report 2: დიჯანქა → გაიყიდა (იგივე ტელეფონი)
 const PHONE_MATCH_FIELD = 'UF_CRM_5E5E926786D76';
-const DJANKA_STAGE_IDS = ['NEW', 'C0:NEW'];
-const SOLD_STAGE_IDS = ['WON', 'C0:WON', 'PREPAYMENT_INVOICE', 'C0:PREPAYMENT_INVOICE'];
+const MOTKHOVNA_FIELD = 'UF_CRM_5F2A7F2C0F9C9'; // მოთხოვნა (dropdown)
+const SERVICE_LEADS_FIELD = 'UF_CRM_1707196806355'; // Service Leads
 const DELAY_MS = 500;
 
 // Bitrix24 deal URL (clicking a row opens the deal)
@@ -45,6 +44,48 @@ function asStr(v) {
 
 function norm(v) {
   return asStr(v).trim();
+}
+
+function formatDate(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return '-';
+  const s = String(v).trim();
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2})?([+-]\d{2}(?::\d{2})?)?/);
+  if (m) return m[1] + ' ' + m[2] + ':' + m[3];
+  return s;
+}
+
+function getDropdownValue(v, listMap) {
+  if (v === null || v === undefined) return '';
+  let rawId = '';
+  if (typeof v === 'object' && v.value != null) return String(v.value).trim();
+  if (typeof v === 'object' && v.id != null) rawId = String(v.id).trim();
+  else rawId = String(v).trim();
+  if (listMap && rawId && listMap[rawId]) return listMap[rawId];
+  return rawId;
+}
+
+async function fetchMotkhovnaListMap() {
+  const map = {};
+  try {
+    const res = await axios.post(BITRIX_BASE + '/crm.deal.userfield.list.json', {});
+    const data = res.data || {};
+    if (data.error || !data.result) return map;
+    const fields = Array.isArray(data.result) ? data.result : Object.values(data.result);
+    const field = fields.find((f) => (f.FIELD || f.FIELD_NAME || f.field) === MOTKHOVNA_FIELD);
+    if (!field) return map;
+    const list = field.LIST || field.list;
+    if (!list) return map;
+    const entries = Array.isArray(list)
+      ? list.map((it, i) => [(it.ID ?? it.id ?? i).toString(), it])
+      : Object.entries(list);
+    for (const [id, it] of entries) {
+      const name = (it && (it.VALUE ?? it.value ?? it.NAME ?? it.name)) ?? id;
+      if (id) map[String(id)] = String(name).trim();
+    }
+  } catch (e) {
+    console.warn('Motkhovna list fetch failed:', e.message);
+  }
+  return map;
 }
 
 function hasRequiredField(value) {
@@ -70,7 +111,56 @@ async function fetchAllDeals(dateFrom, dateTo) {
         '<=DATE_CREATE': to,
         [FLAG_FIELD]: '1',
       },
-      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD],
+      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
+      start,
+    };
+
+    let response;
+    try {
+      response = await axios.post(BITRIX_WEBHOOK_URL, payload, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      console.error('API error:', error.response?.data || error.message);
+      throw error;
+    }
+
+    const data = response.data || {};
+    if (data.error) throw new Error(data.error_description || data.error);
+
+    const batch = Array.isArray(data.result) ? data.result : [];
+    allDeals.push(...batch);
+
+    const nextRaw = data.next;
+    if (nextRaw === undefined || nextRaw === null) break;
+
+    const nextValue = Number(nextRaw);
+    if (!Number.isFinite(nextValue) || nextValue <= start) break;
+
+    start = nextValue;
+    await sleep(DELAY_MS);
+  }
+
+  return allDeals;
+}
+
+async function fetchServiceLeadsDeals(dateFrom, dateTo) {
+  const from = (dateFrom || DEFAULT_DATE_FROM) + 'T00:00:00';
+  const to = (dateTo || DEFAULT_DATE_TO) + 'T23:59:59';
+  const allDeals = [];
+  let start = 0;
+  let page = 0;
+
+  while (page < MAX_PAGES) {
+    page += 1;
+    const payload = {
+      filter: {
+        CATEGORY_ID: CATEGORY_ID,
+        '>=DATE_CREATE': from,
+        '<=DATE_CREATE': to,
+        [SERVICE_LEADS_FIELD]: 1,
+      },
+      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
       start,
     };
 
@@ -274,42 +364,7 @@ function buildReport(deals) {
   return { metricA, metricB, percentage, deals: filtered };
 }
 
-function isDjankaStage(stageId) {
-  const s = norm(stageId);
-  return s && DJANKA_STAGE_IDS.includes(s);
-}
-
-function isSoldStage(stageId) {
-  const s = norm(stageId);
-  return s && SOLD_STAGE_IDS.includes(s);
-}
-
-function buildReport2(deals) {
-  const filtered = deals.filter((d) => hasRequiredField(d[REQUIRED_FIELD]));
-  const byPhone = {};
-  for (const d of filtered) {
-    const phone = norm(d[PHONE_MATCH_FIELD]);
-    if (!phone) continue;
-    if (!byPhone[phone]) byPhone[phone] = [];
-    byPhone[phone].push(d);
-  }
-  const soldDeals = [];
-  for (const phone of Object.keys(byPhone)) {
-    const group = byPhone[phone];
-    const djankas = group.filter((d) => isDjankaStage(d.STAGE_ID));
-    const solds = group.filter((d) => isSoldStage(d.STAGE_ID));
-    if (djankas.length === 0 || solds.length === 0) continue;
-    const djankaDates = djankas.map((d) => new Date(norm(d.DATE_CREATE) || 0).getTime());
-    const minDjankaDate = Math.min(...djankaDates);
-    for (const s of solds) {
-      const soldDate = new Date(norm(s.DATE_CREATE) || 0).getTime();
-      if (soldDate >= minDjankaDate) soldDeals.push(s);
-    }
-  }
-  return { count: soldDeals.length, deals: soldDeals };
-}
-
-function buildRows(deals, stageMap, userMap, firstCommMap) {
+function buildRows(deals, stageMap, userMap, firstCommMap, motkhovnaListMap) {
   return deals.map((d) => {
     const id = norm(d.ID) || '-';
     const title = norm(d.TITLE) || '(უსახელო)';
@@ -321,42 +376,22 @@ function buildRows(deals, stageMap, userMap, firstCommMap) {
     if (createdBy && typeof createdBy === 'object' && createdBy.id != null) createdBy = createdBy.id;
     createdBy = norm(createdBy) || '';
     const createdByName = createdBy ? (userMap[createdBy] || createdBy) : '-';
-    const dateCreate = norm(d.DATE_CREATE) || '-';
-    const redistributionDate = norm(d[REQUIRED_FIELD]) || '-';
-    const firstCommDate = (firstCommMap && firstCommMap[id]) || '-';
+    const dateCreate = formatDate(d.DATE_CREATE);
+    const redistributionDate = formatDate(d[REQUIRED_FIELD]);
+    const firstCommDate = formatDate((firstCommMap && firstCommMap[id]) || null);
+    const motkhovna = getDropdownValue(d[MOTKHOVNA_FIELD], motkhovnaListMap) || '-';
     const dealUrl = `${BITRIX_DEAL_URL}/${id}/`;
-    return { id, title, stageName, assignedByName, createdByName, dateCreate, redistributionDate, firstCommDate, dealUrl };
+    return { id, title, stageName, assignedByName, createdByName, dateCreate, redistributionDate, firstCommDate, motkhovna, dealUrl };
   });
 }
 
-function buildRows2(deals, stageMap, userMap, firstCommMap) {
-  return deals.map((d) => {
-    const id = norm(d.ID) || '-';
-    const title = norm(d.TITLE) || '(უსახელო)';
-    const stageId = norm(d.STAGE_ID) || '-';
-    const stageName = stageMap[stageId] || stageId;
-    const phone = norm(d[PHONE_MATCH_FIELD]) || '-';
-    const assignedBy = norm(d.ASSIGNED_BY_ID) || '';
-    const assignedByName = assignedBy ? (userMap[assignedBy] || assignedBy) : '-';
-    let createdBy = d[CREATED_BY_FIELD];
-    if (createdBy && typeof createdBy === 'object' && createdBy.id != null) createdBy = createdBy.id;
-    createdBy = norm(createdBy) || '';
-    const createdByName = createdBy ? (userMap[createdBy] || createdBy) : '-';
-    const dateCreate = norm(d.DATE_CREATE) || '-';
-    const redistributionDate = norm(d[REQUIRED_FIELD]) || '-';
-    const firstCommDate = (firstCommMap && firstCommMap[id]) || '-';
-    const dealUrl = `${BITRIX_DEAL_URL}/${id}/`;
-    return { id, title, stageName, phone, assignedByName, createdByName, dateCreate, redistributionDate, firstCommDate, dealUrl };
-  });
-}
-
-function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, dateTo) {
+function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo) {
   const { metricA, metricB, percentage } = report;
-  const count2 = report2 ? report2.count : 0;
+  const svc = serviceReport || { metricA: 0, metricB: 0, percentage: 0 };
   const from = dateFrom || DEFAULT_DATE_FROM;
   const to = dateTo || DEFAULT_DATE_TO;
   const rowsJson = JSON.stringify(rows);
-  const rows2Json = JSON.stringify(rows2 || []);
+  const serviceRowsJson = JSON.stringify(serviceRows || []);
 
   return `
 <!DOCTYPE html>
@@ -401,6 +436,12 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
     .nav-reports { display:flex; gap:12px; margin:20px 0; padding:12px 16px; background:#eff6ff; border-radius:8px; border:1px solid #bfdbfe; }
     .nav-reports a { padding:10px 20px; background:#2563eb; color:#fff; border-radius:6px; text-decoration:none; font-weight:500; }
     .nav-reports a:hover { background:#1d4ed8; }
+    .tabs { display:flex; gap:0; margin:20px 0 0; border-bottom:2px solid #e5e7eb; }
+    .tabs button { padding:12px 24px; background:#f9fafb; border:1px solid #e5e7eb; border-bottom:none; cursor:pointer; font-size:15px; font-weight:500; color:#6b7280; border-radius:8px 8px 0 0; margin-right:4px; }
+    .tabs button:hover { background:#f3f4f6; color:#374151; }
+    .tabs button.active { background:#fff; color:#2563eb; border-color:#e5e7eb; margin-bottom:-2px; padding-bottom:14px; }
+    .tab-content { display:none; padding:24px 0 0; }
+    .tab-content.active { display:block; }
   </style>
 </head>
 <body>
@@ -414,13 +455,14 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
       <button type="submit">განახლება</button>
     </form>
     <p>Pipeline 0 | ${escapeHtml(from)} – ${escapeHtml(to)}</p>
-    <div class="nav-reports">
-      <a href="#report1">↓ რეპორტი 1</a>
-      <a href="#report2">↓ რეპორტი 2 (დიჯანქა → გაიყიდა)</a>
+    <div class="tabs">
+      <button type="button" class="tab-btn active" data-tab="report1">Buddys Leads</button>
+      <button type="button" class="tab-btn" data-tab="serviceleads">Service Leads</button>
     </div>
 
-    <h2 id="report1">რეპორტი 1: რეგისტრირებული / დამუშავებული</h2>
-    <div class="metrics">
+    <div id="tab-report1" class="tab-content active">
+      <h2>Buddys Leads</h2>
+      <div class="metrics">
         <div class="card">
           <div class="card-title">რეგისტრირებული (Metric A)</div>
           <div class="card-value">${metricA}</div>
@@ -434,44 +476,16 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
           <div class="card-value accent">${percentage}%</div>
         </div>
       </div>
-
-    <div id="report2" class="report-section">
-      <h2>რეპორტი 2: დიჯანქა → გაიყიდა (იგივე ტელეფონი)</h2>
-      <div class="metrics">
-        <div class="card">
-          <div class="card-title">დილები: დიჯანქა → გაიყიდა (იგივე ტელეფონი)</div>
-          <div class="card-value accent">${count2}</div>
-        </div>
-      </div>
       <div class="table-wrap">
         <div class="table-title">
-          <span>დილების ცხრილი (დიჯანქა და შემდეგ გაყიდვა იგივე ტელეფონით)</span>
-          <div class="table-actions">
-            <button type="button" class="btn btn-primary" id="btnExport2">ექსპორტი Excel</button>
-          </div>
-        </div>
-        <table>
-          <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ეტაპი</th><th>პირველი კომუნიკაცია</th><th>გადანაწილების თარიღი</th><th>ტელეფონი</th><th>პასუხისმგებელი</th><th>ვინ შექმნა</th><th>შექმნის თარიღი</th></tr>
-          </thead>
-          <tbody id="tableBody2"></tbody>
-        </table>
-        <div class="pagination" id="pagination2"></div>
-      </div>
-    </div>
-
-    <div class="report-section">
-      <h2>რეპორტი 1 – ცხრილი</h2>
-      <div class="table-wrap">
-        <div class="table-title">
-          <span>დილების ცხრილი (სტრიქონზე გადახვიდე დილზე Bitrix24-ში)</span>
+          <span>Deals</span>
           <div class="table-actions">
             <button type="button" class="btn btn-primary" id="btnExport">ექსპორტი Excel</button>
           </div>
         </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ეტაპი</th><th>პირველი კომუნიკაცია</th><th>გადანაწილების თარიღი</th><th>პასუხისმგებელი</th><th>ვინ შექმნა</th><th>შექმნის თარიღი</th></tr>
+            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
@@ -479,15 +493,48 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
       </div>
     </div>
 
+    <div id="tab-serviceleads" class="tab-content">
+      <h2>Service Leads</h2>
+      <div class="metrics">
+        <div class="card">
+          <div class="card-title">რეგისტრირებული (Metric A)</div>
+          <div class="card-value">${svc.metricA}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">დამუშავებული სეილის მიერ (Metric B)</div>
+          <div class="card-value">${svc.metricB}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Processing Rate</div>
+          <div class="card-value accent">${svc.percentage}%</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-title">
+          <span>Deals</span>
+          <div class="table-actions">
+            <button type="button" class="btn btn-primary" id="btnExportService">ექსპორტი Excel</button>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>მოთხოვნა</th></tr>
+          </thead>
+          <tbody id="tableBodyService"></tbody>
+        </table>
+        <div class="pagination" id="paginationService"></div>
+      </div>
+    </div>
+
     <div class="footer">გენერირებული: ${new Date().toISOString()}</div>
   </div>
   <script>
     var ROWS = ${rowsJson};
-    var ROWS2 = ${rows2Json};
+    var SERVICE_ROWS = ${serviceRowsJson};
     var PAGE_SIZE = 25;
-    var PAGE_SIZE2 = 25;
+    var PAGE_SIZE_SERVICE = 25;
     var currentPage = 1;
-    var currentPage2 = 1;
+    var currentPageService = 1;
 
     function escapeHtml(s) {
       if (s == null) return '';
@@ -506,7 +553,7 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
 
       tbody.innerHTML = '';
       if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="' + (tbodyId === 'tableBody2' ? 9 : 8) + '">დილები არ მოიძებნა</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9">დილები არ მოიძებნა</td></tr>';
       } else {
         pageRows.forEach(function(r) {
           var tr = document.createElement('tr');
@@ -534,9 +581,9 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
             currentPage = Math.min(currentPage, Math.max(1, Math.ceil(rows.length / PAGE_SIZE)));
             renderTable();
           } else {
-            PAGE_SIZE2 = parseInt(this.value, 10);
-            currentPage2 = Math.min(currentPage2, Math.max(1, Math.ceil(rows.length / PAGE_SIZE2)));
-            renderTable2();
+            PAGE_SIZE_SERVICE = parseInt(this.value, 10);
+            currentPageService = Math.min(currentPageService, Math.max(1, Math.ceil(rows.length / PAGE_SIZE_SERVICE)));
+            renderTableService();
           }
         });
         pagination.appendChild(sel);
@@ -546,7 +593,7 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
           prev.textContent = '← წინა';
           prev.onclick = function() {
             if (paginationId === 'pagination') { currentPage--; renderTable(); }
-            else { currentPage2--; renderTable2(); }
+            else { currentPageService--; renderTableService(); }
           };
           pagination.appendChild(prev);
         }
@@ -559,7 +606,7 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
           next.textContent = 'შემდეგი →';
           next.onclick = function() {
             if (paginationId === 'pagination') { currentPage++; renderTable(); }
-            else { currentPage2++; renderTable2(); }
+            else { currentPageService++; renderTableService(); }
           };
           pagination.appendChild(next);
         }
@@ -568,28 +615,38 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
 
     function renderTable() {
       renderPagination('tableBody', 'pagination', ROWS, PAGE_SIZE, currentPage, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td>';
+        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
 
-    function renderTable2() {
-      renderPagination('tableBody2', 'pagination2', ROWS2, PAGE_SIZE2, currentPage2, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.phone) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td>';
+    function renderTableService() {
+      renderPagination('tableBodyService', 'paginationService', SERVICE_ROWS, PAGE_SIZE_SERVICE, currentPageService, function(r) {
+        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
+
+    document.querySelectorAll('.tab-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var tab = this.getAttribute('data-tab');
+        document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+        document.querySelectorAll('.tab-content').forEach(function(c) { c.classList.remove('active'); });
+        this.classList.add('active');
+        document.getElementById('tab-' + tab).classList.add('active');
+      });
+    });
 
     document.getElementById('btnExport').onclick = function() {
       var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}';
       window.location.href = '/export' + qs;
     };
 
-    document.getElementById('btnExport2').onclick = function() {
-      var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}&report=2';
+    document.getElementById('btnExportService').onclick = function() {
+      var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}&tab=serviceleads';
       window.location.href = '/export' + qs;
     };
 
     renderTable();
-    renderTable2();
+    renderTableService();
   </script>
 </body>
 </html>
@@ -615,11 +672,15 @@ function getDateParams(req) {
 app.get('/', async (req, res) => {
   try {
     const { dateFrom, dateTo } = getDateParams(req);
-    const deals = await fetchAllDeals(dateFrom, dateTo);
+    const [deals, serviceDeals] = await Promise.all([
+      fetchAllDeals(dateFrom, dateTo),
+      fetchServiceLeadsDeals(dateFrom, dateTo),
+    ]);
     const report = buildReport(deals);
+    const serviceReport = buildReport(serviceDeals);
 
     const userIds = new Set();
-    for (const d of report.deals) {
+    for (const d of [...report.deals, ...serviceReport.deals]) {
       const a = norm(d.ASSIGNED_BY_ID);
       if (a) userIds.add(a);
       let c = d[CREATED_BY_FIELD];
@@ -628,15 +689,15 @@ app.get('/', async (req, res) => {
       if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
     }
 
-    const [stageMap, userMap] = await Promise.all([
+    const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
       fetchDealStages(),
       fetchUserNames([...userIds]),
+      fetchMotkhovnaListMap(),
     ]);
 
-    const report2 = buildReport2(deals);
     const seenIds = new Set();
     const allDealsForComm = [];
-    for (const d of [...report.deals, ...report2.deals]) {
+    for (const d of [...report.deals, ...serviceReport.deals]) {
       const id = String(norm(d.ID) || '').trim();
       if (id && !seenIds.has(id)) {
         seenIds.add(id);
@@ -645,9 +706,9 @@ app.get('/', async (req, res) => {
     }
     const firstCommMap = await fetchFirstCommDatesForDeals(allDealsForComm);
 
-    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap);
-    const rows2 = buildRows2(report2.deals, stageMap, userMap, firstCommMap);
-    res.status(200).send(renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, dateTo));
+    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    res.status(200).send(renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo));
   } catch (err) {
     console.error(err);
     res.status(500).send(`
@@ -662,12 +723,14 @@ app.get('/', async (req, res) => {
 app.get('/export', async (req, res) => {
   try {
     const { dateFrom, dateTo } = getDateParams(req);
-    const isReport2 = req.query.report === '2';
-    const deals = await fetchAllDeals(dateFrom, dateTo);
+    const isServiceLeads = req.query.tab === 'serviceleads';
+    const [deals, serviceDeals] = await Promise.all([
+      fetchAllDeals(dateFrom, dateTo),
+      fetchServiceLeadsDeals(dateFrom, dateTo),
+    ]);
     const report = buildReport(deals);
-    const report2 = buildReport2(deals);
-
-    const allDeals = isReport2 ? report2.deals : report.deals;
+    const serviceReport = buildReport(serviceDeals);
+    const allDeals = isServiceLeads ? serviceReport.deals : report.deals;
     const userIds = new Set();
     for (const d of allDeals) {
       const a = norm(d.ASSIGNED_BY_ID);
@@ -678,30 +741,26 @@ app.get('/export', async (req, res) => {
       if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
     }
 
-    const [stageMap, userMap] = await Promise.all([
+    const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
       fetchDealStages(),
       fetchUserNames([...userIds]),
+      fetchMotkhovnaListMap(),
     ]);
 
     const firstCommMap = await fetchFirstCommDatesForDeals(allDeals);
-    const rows = isReport2 ? buildRows2(allDeals, stageMap, userMap, firstCommMap) : buildRows(allDeals, stageMap, userMap, firstCommMap);
-    const data = isReport2
-      ? [
-          ['ID', 'სახელწოდება', 'ეტაპი', 'პირველი კომუნიკაცია', 'გადანაწილების თარიღი', 'ტელეფონი', 'პასუხისმგებელი', 'ვინ შექმნა', 'შექმნის თარიღი'],
-          ...rows.map((r) => [r.id, r.title, r.stageName, r.firstCommDate, r.redistributionDate, r.phone, r.assignedByName, r.createdByName, r.dateCreate]),
-        ]
-      : [
-          ['ID', 'სახელწოდება', 'ეტაპი', 'პირველი კომუნიკაცია', 'გადანაწილების თარიღი', 'პასუხისმგებელი', 'ვინ შექმნა', 'შექმნის თარიღი'],
-          ...rows.map((r) => [r.id, r.title, r.stageName, r.firstCommDate, r.redistributionDate, r.assignedByName, r.createdByName, r.dateCreate]),
-        ];
+    const rows = buildRows(allDeals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const data = [
+      ['ID', 'სახელწოდება', 'ვინ შექმნა', 'პასუხისმგებელი', 'ეტაპი', 'შექმნის თარიღი', 'გადანაწილების თარიღი', 'პირველი კომუნიკაცია', 'მოთხოვნა'],
+      ...rows.map((r) => [r.id, r.title, r.createdByName, r.assignedByName, r.stageName, r.dateCreate, r.redistributionDate, r.firstCommDate, r.motkhovna]),
+    ];
 
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(data);
-    XLSX.utils.book_append_sheet(wb, ws, isReport2 ? 'დიჯანქა-გაყიდვა' : 'დილები');
+    XLSX.utils.book_append_sheet(wb, ws, isServiceLeads ? 'Service Leads' : 'დილები');
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', 'attachment; filename="bitrix_report' + (isReport2 ? '_djanka_sold_' : '_') + dateFrom + '_' + dateTo + '.xlsx"');
+    res.setHeader('Content-Disposition', 'attachment; filename="bitrix_report' + (isServiceLeads ? '_serviceleads_' : '_') + dateFrom + '_' + dateTo + '.xlsx"');
     res.send(buf);
   } catch (err) {
     console.error(err);
