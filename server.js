@@ -753,7 +753,6 @@ function getDateParams(req) {
 function renderShell(dateFrom, dateTo) {
   const from = dateFrom || DEFAULT_DATE_FROM;
   const to = dateTo || DEFAULT_DATE_TO;
-  const streamUrl = '/api/report-stream?date_from=' + encodeURIComponent(from) + '&date_to=' + encodeURIComponent(to);
   return `
 <!DOCTYPE html>
 <html lang="ka">
@@ -806,7 +805,15 @@ function renderShell(dateFrom, dateTo) {
       }
     });
 
-    fetch('${escapeHtml(streamUrl)}')
+    function getStreamUrl() {
+      var params = new URLSearchParams(window.location.search);
+      var from = params.get('date_from') || '${escapeHtml(DEFAULT_DATE_FROM)}';
+      var to = params.get('date_to') || '${escapeHtml(DEFAULT_DATE_TO)}';
+      if (from > to) { var t = from; from = to; to = t; }
+      return '/api/report-stream?date_from=' + encodeURIComponent(from) + '&date_to=' + encodeURIComponent(to);
+    }
+
+    fetch(getStreamUrl(), { cache: 'no-store' })
       .then(function(r) {
         if (!r.ok) throw new Error(r.statusText);
         return r.body.getReader();
@@ -913,7 +920,7 @@ app.get('/api/report', async (req, res) => {
 
 app.get('/api/report-stream', async (req, res) => {
   res.setHeader('Content-Type', 'application/x-ndjson');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
