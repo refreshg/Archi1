@@ -464,7 +464,7 @@ function renderHtml(report, report2, stageMap, userMap, rows, rows2, dateFrom, d
       <h2>რეპორტი 1 – ცხრილი</h2>
       <div class="table-wrap">
         <div class="table-title">
-          <span>დილების ცხრილი (დააწვი რომ გადახვიდე დილზე Bitrix24-ში)</span>
+          <span>დილების ცხრილი (სტრიქონზე გადახვიდე დილზე Bitrix24-ში)</span>
           <div class="table-actions">
             <button type="button" class="btn btn-primary" id="btnExport">ექსპორტი Excel</button>
           </div>
