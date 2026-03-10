@@ -511,13 +511,23 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 <body>
   <div class="container">
     <h1>Bitrix24 Sales Performance Report</h1>
-    <form class="date-form" method="get" action="/" target="_top">
+    <form class="date-form" method="get" action="/" target="_top" id="dateForm">
       <label>თარიღიდან:</label>
       <input type="date" name="date_from" value="${escapeHtml(from)}" required />
       <label>თარიღამდე:</label>
       <input type="date" name="date_to" value="${escapeHtml(to)}" required />
       <button type="submit">განახლება</button>
     </form>
+    <script>
+      document.getElementById('dateForm').addEventListener('submit', function(e) {
+        var from = this.querySelector('[name="date_from"]').value;
+        var to = this.querySelector('[name="date_to"]').value;
+        if (from && to && from > to) {
+          this.querySelector('[name="date_from"]').value = to;
+          this.querySelector('[name="date_to"]').value = from;
+        }
+      });
+    </script>
     <p>Pipeline 0 | ${escapeHtml(from)} – ${escapeHtml(to)}</p>
     <div class="tabs">
       <button type="button" class="tab-btn active" data-tab="report1">Buddys Leads</button>
@@ -728,9 +738,12 @@ function escapeHtml(str) {
 }
 
 function getDateParams(req) {
-  const from = (req.query.date_from || DEFAULT_DATE_FROM).toString().trim();
-  const to = (req.query.date_to || DEFAULT_DATE_TO).toString().trim();
-  return { dateFrom: from || DEFAULT_DATE_FROM, dateTo: to || DEFAULT_DATE_TO };
+  let from = (req.query.date_from || DEFAULT_DATE_FROM).toString().trim();
+  let to = (req.query.date_to || DEFAULT_DATE_TO).toString().trim();
+  from = from || DEFAULT_DATE_FROM;
+  to = to || DEFAULT_DATE_TO;
+  if (from > to) [from, to] = [to, from];
+  return { dateFrom: from, dateTo: to };
 }
 
 function renderShell(dateFrom, dateTo) {
