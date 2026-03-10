@@ -259,28 +259,88 @@ async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
     console.warn('Comment fetch for deal', dealId, 'failed:', e.message);
   }
 
-  // 2. Outbound call – პასუხისმგებლის მიერ გაკეთებული
+  // 2. Outbound კომუნიკაცია – ზარი, SMS და სხვა (პასუხისმგებლის მიერ)
   if (assignedByStr) {
-    try {
-      const activityRes = await axios.post(BITRIX_BASE + '/crm.activity.list.json', {
-        filter: {
-          OWNER_TYPE_ID: 2,
-          OWNER_ID: Number(dealId),
-          PROVIDER_TYPE_ID: 'CALL',
-          DIRECTION: 2,
-          RESPONSIBLE_ID: assignedByStr,
-        },
-        select: ['CREATED', 'START_TIME'],
-        order: { CREATED: 'ASC' },
-        start: 0,
-      });
-      const activityData = activityRes.data || {};
-      if (!activityData.error && activityData.result && activityData.result.length > 0) {
-        const first = activityData.result[0];
-        addIfAfterRedist(first.CREATED || first.START_TIME);
+    const commTypes = ['CALL', 'SMS'];
+    for (const provType of commTypes) {
+      try {
+        const activityRes = await axios.post(BITRIX_BASE + '/crm.activity.list.json', {
+          filter: {
+            OWNER_TYPE_ID: 2,
+            OWNER_ID: Number(dealId),
+            PROVIDER_TYPE_ID: provType,
+            DIRECTION: 2,
+            RESPONSIBLE_ID: assignedByStr,
+          },
+          select: ['CREATED', 'START_TIME'],
+          order: { CREATED: 'ASC' },
+          start: 0,
+        });
+        const activityData = activityRes.data || {};
+        if (!activityData.error && activityData.result && activityData.result.length > 0) {
+          const first = activityData.result[0];
+          addIfAfterRedist(first.CREATED || first.START_TIME);
+        }
+      } catch (e) {
+        if (provType === 'CALL') console.warn('Activity (call) fetch for deal', dealId, 'failed:', e.message);
       }
-    } catch (e) {
-      console.warn('Activity (outbound call) fetch for deal', dealId, 'failed:', e.message);
+    }
+    // თუ CALL/SMS ვერ მოიძებნა, ვცადოთ ყველა outbound აქტივობა (Asterisk და სხვა)
+    if (dates.length === 0) {
+      try {
+        const activityRes = await axios.post(BITRIX_BASE + '/crm.activity.list.json', {
+          filter: {
+            OWNER_TYPE_ID: 2,
+            OWNER_ID: Number(dealId),
+            DIRECTION: 2,
+            RESPONSIBLE_ID: assignedByStr,
+          },
+          select: ['CREATED', 'START_TIME', 'PROVIDER_TYPE_ID'],
+          order: { CREATED: 'ASC' },
+          start: 0,
+        });
+        const activityData = activityRes.data || {};
+        if (!activityData.error && activityData.result && activityData.result.length > 0) {
+          const commTypesSet = new Set(['CALL', 'SMS', 'EMAIL']);
+          for (const a of activityData.result) {
+            const pt = (a.PROVIDER_TYPE_ID || '').toUpperCase();
+            if (commTypesSet.has(pt) || pt.includes('CALL') || pt.includes('SMS')) {
+              addIfAfterRedist(a.CREATED || a.START_TIME);
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Activity (outbound) fetch for deal', dealId, 'failed:', e.message);
+      }
+    }
+    // BINDINGS-ით ვცადოთ (აქტივობა შეიძლება დილას ბინდინგით იყოს მიბმული)
+    if (dates.length === 0) {
+      try {
+        const activityRes = await axios.post(BITRIX_BASE + '/crm.activity.list.json', {
+          filter: {
+            BINDINGS: [{ OWNER_TYPE_ID: 2, OWNER_ID: Number(dealId) }],
+            DIRECTION: 2,
+            RESPONSIBLE_ID: assignedByStr,
+          },
+          select: ['CREATED', 'START_TIME', 'PROVIDER_TYPE_ID'],
+          order: { CREATED: 'ASC' },
+          start: 0,
+        });
+        const activityData = activityRes.data || {};
+        if (!activityData.error && activityData.result && activityData.result.length > 0) {
+          const commTypesSet = new Set(['CALL', 'SMS', 'EMAIL']);
+          for (const a of activityData.result) {
+            const pt = String(a.PROVIDER_TYPE_ID || '').toUpperCase();
+            if (commTypesSet.has(pt) || pt.includes('CALL') || pt.includes('SMS')) {
+              addIfAfterRedist(a.CREATED || a.START_TIME);
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Activity (BINDINGS) fetch for deal', dealId, 'failed:', e.message);
+      }
     }
   }
 
@@ -318,8 +378,9 @@ async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
   return dates[0];
 }
 
-async function fetchFirstCommDatesForDeals(deals) {
+async function fetchFirstCommDatesForDeals(deals, onProgress) {
   const map = {};
+  const total = deals.length;
   for (let i = 0; i < deals.length; i++) {
     const d = deals[i];
     const id = String(norm(d.ID) || '').trim();
@@ -327,6 +388,7 @@ async function fetchFirstCommDatesForDeals(deals) {
     const assignedById = d.ASSIGNED_BY_ID != null ? String(d.ASSIGNED_BY_ID).trim() : '';
     const redistributionDate = d[REQUIRED_FIELD] ? norm(d[REQUIRED_FIELD]) : null;
     map[id] = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
+    if (onProgress && total > 0) onProgress(Math.round(((i + 1) / total) * 100));
     if ((i + 1) % 5 === 0) await sleep(100);
   }
   return map;
@@ -449,7 +511,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 <body>
   <div class="container">
     <h1>Bitrix24 Sales Performance Report</h1>
-    <form class="date-form" method="get" action="/">
+    <form class="date-form" method="get" action="/" target="_top">
       <label>თარიღიდან:</label>
       <input type="date" name="date_from" value="${escapeHtml(from)}" required />
       <label>თარიღამდე:</label>
@@ -639,12 +701,12 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 
     document.getElementById('btnExport').onclick = function() {
       var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}';
-      window.location.href = '/export' + qs;
+      window.open('/export' + qs, '_blank');
     };
 
     document.getElementById('btnExportService').onclick = function() {
       var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}&tab=serviceleads';
-      window.location.href = '/export' + qs;
+      window.open('/export' + qs, '_blank');
     };
 
     renderTable();
@@ -671,7 +733,108 @@ function getDateParams(req) {
   return { dateFrom: from || DEFAULT_DATE_FROM, dateTo: to || DEFAULT_DATE_TO };
 }
 
-app.get('/', async (req, res) => {
+function renderShell(dateFrom, dateTo) {
+  const from = dateFrom || DEFAULT_DATE_FROM;
+  const to = dateTo || DEFAULT_DATE_TO;
+  const streamUrl = '/api/report-stream?date_from=' + encodeURIComponent(from) + '&date_to=' + encodeURIComponent(to);
+  return `
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bitrix24 Sales Performance Report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#f5f7fb; margin:0; padding:40px; }
+    .loader-overlay { position:fixed; inset:0; background:rgba(255,255,255,.95); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:9999; }
+    .loader-overlay.hidden { display:none; }
+    .loader-spinner { width:48px; height:48px; border:4px solid #e5e7eb; border-top-color:#2563eb; border-radius:50%; animation:spin 1s linear infinite; margin-bottom:20px; }
+    .loader-text { font-size:18px; font-weight:500; color:#374151; margin-bottom:12px; }
+    .loader-bar { width:320px; height:8px; background:#e5e7eb; border-radius:4px; overflow:hidden; }
+    .loader-fill { height:100%; background:#2563eb; border-radius:4px; transition:width .2s ease; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    #report-frame { width:100%; min-height:90vh; border:none; display:block; margin-top:0; }
+  </style>
+</head>
+<body>
+  <div class="loader-overlay" id="loader">
+    <div class="loader-spinner"></div>
+    <div class="loader-text" id="loaderText">ჩატვირთვა... 0%</div>
+    <div class="loader-bar"><div class="loader-fill" id="loaderFill" style="width:0%"></div></div>
+  </div>
+  <iframe id="report-frame"></iframe>
+  <script>
+    var loader = document.getElementById('loader');
+    var loaderText = document.getElementById('loaderText');
+    var loaderFill = document.getElementById('loaderFill');
+    var frame = document.getElementById('report-frame');
+
+    function setProgress(value, label) {
+      loaderFill.style.width = value + '%';
+      loaderText.textContent = (label || 'ჩატვირთვა...') + ' ' + value + '%';
+    }
+
+    function hideLoader() {
+      setProgress(100, 'მზადაა');
+      setTimeout(function() {
+        loader.classList.add('hidden');
+      }, 300);
+    }
+
+    loader.classList.remove('hidden');
+    setProgress(0, 'ჩატვირთვა...');
+
+    fetch('${escapeHtml(streamUrl)}')
+      .then(function(r) {
+        if (!r.ok) throw new Error(r.statusText);
+        return r.body.getReader();
+      })
+      .then(function(reader) {
+        var decoder = new TextDecoder();
+        var buf = '';
+        return reader.read().then(function processChunk(result) {
+          if (result.done) return;
+          buf += decoder.decode(result.value, { stream: true });
+          var lines = buf.split('\\n');
+          buf = lines.pop();
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+            try {
+              var obj = JSON.parse(line);
+              if (obj.type === 'progress') {
+                setProgress(obj.value, obj.label || 'ჩატვირთვა...');
+              } else if (obj.type === 'html') {
+                frame.srcdoc = obj.content;
+                hideLoader();
+                return;
+              } else if (obj.type === 'error') {
+                loaderText.textContent = 'შეცდომა: ' + (obj.message || 'შეცდომა');
+                loaderText.style.color = '#b91c1c';
+                return;
+              }
+            } catch (e) {
+              if (e instanceof SyntaxError) continue;
+              throw e;
+            }
+          }
+          return reader.read().then(processChunk);
+        });
+      })
+      .catch(function(err) {
+        loaderText.textContent = 'შეცდომა: ' + (err.message || err);
+        loaderText.style.color = '#b91c1c';
+      });
+  </script>
+</body>
+</html>`;
+}
+
+app.get('/', (req, res) => {
+  const { dateFrom, dateTo } = getDateParams(req);
+  res.status(200).send(renderShell(dateFrom, dateTo));
+});
+
+app.get('/api/report', async (req, res) => {
   try {
     const { dateFrom, dateTo } = getDateParams(req);
     const [deals, serviceDeals] = await Promise.all([
@@ -719,6 +882,72 @@ app.get('/', async (req, res) => {
         <pre>${asStr(err && err.stack ? err.stack : err)}</pre>
       </body></html>
     `);
+  }
+});
+
+app.get('/api/report-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    const { dateFrom, dateTo } = getDateParams(req);
+    send({ type: 'progress', value: 5, label: 'დილების ჩატვირთვა...' });
+
+    const [deals, serviceDeals] = await Promise.all([
+      fetchAllDeals(dateFrom, dateTo),
+      fetchServiceLeadsDeals(dateFrom, dateTo),
+    ]);
+    send({ type: 'progress', value: 25, label: 'რეპორტის მომზადება...' });
+
+    const report = buildReport(deals);
+    const serviceReport = buildReport(serviceDeals);
+    const userIds = new Set();
+    for (const d of [...report.deals, ...serviceReport.deals]) {
+      const a = norm(d.ASSIGNED_BY_ID);
+      if (a) userIds.add(a);
+      let c = d[CREATED_BY_FIELD];
+      if (c && typeof c === 'object' && c.id != null) c = c.id;
+      if (Array.isArray(c)) c = c[0];
+      if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+    }
+
+    const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
+      fetchDealStages(),
+      fetchUserNames([...userIds]),
+      fetchMotkhovnaListMap(),
+    ]);
+    send({ type: 'progress', value: 40, label: 'პირველი კომუნიკაციის თარიღები...' });
+
+    const seenIds = new Set();
+    const allDealsForComm = [];
+    for (const d of [...report.deals, ...serviceReport.deals]) {
+      const id = String(norm(d.ID) || '').trim();
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        allDealsForComm.push(d);
+      }
+    }
+
+    const firstCommMap = await fetchFirstCommDatesForDeals(allDealsForComm, (pct) => {
+      const v = 40 + Math.round((pct / 100) * 45);
+      send({ type: 'progress', value: Math.min(v, 85), label: 'პირველი კომუნიკაციის თარიღები...' });
+    });
+    send({ type: 'progress', value: 90, label: 'ფინალიზაცია...' });
+
+    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const html = renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo);
+    send({ type: 'progress', value: 100, label: 'მზადაა' });
+    send({ type: 'html', content: html });
+  } catch (err) {
+    console.error(err);
+    send({ type: 'error', message: asStr(err && err.message ? err.message : err) });
+  } finally {
+    res.end();
   }
 });
 
