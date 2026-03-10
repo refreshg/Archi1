@@ -511,7 +511,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 <body>
   <div class="container">
     <h1>Bitrix24 Sales Performance Report</h1>
-    <form class="date-form" method="get" action="/" target="_top" id="dateForm">
+    <form class="date-form" id="dateForm">
       <label>თარიღიდან:</label>
       <input type="date" name="date_from" value="${escapeHtml(from)}" required />
       <label>თარიღამდე:</label>
@@ -520,11 +520,15 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
     </form>
     <script>
       document.getElementById('dateForm').addEventListener('submit', function(e) {
+        e.preventDefault();
         var from = this.querySelector('[name="date_from"]').value;
         var to = this.querySelector('[name="date_to"]').value;
-        if (from && to && from > to) {
-          this.querySelector('[name="date_from"]').value = to;
-          this.querySelector('[name="date_to"]').value = from;
+        if (!from || !to) return;
+        if (from > to) { var t = from; from = to; to = t; }
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'reportDateChange', date_from: from, date_to: to }, '*');
+        } else {
+          window.location.href = '/?date_from=' + encodeURIComponent(from) + '&date_to=' + encodeURIComponent(to);
         }
       });
     </script>
@@ -795,6 +799,12 @@ function renderShell(dateFrom, dateTo) {
 
     loader.classList.remove('hidden');
     setProgress(0, 'ჩატვირთვა...');
+
+    window.addEventListener('message', function(event) {
+      if (event.data && event.data.type === 'reportDateChange' && event.data.date_from && event.data.date_to) {
+        window.location.href = '/?date_from=' + encodeURIComponent(event.data.date_from) + '&date_to=' + encodeURIComponent(event.data.date_to);
+      }
+    });
 
     fetch('${escapeHtml(streamUrl)}')
       .then(function(r) {
