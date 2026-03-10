@@ -229,9 +229,13 @@ async function fetchDealStages() {
   return map;
 }
 
-async function fetchFirstCommDate(dealId, assignedById) {
+async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
   const assignedByStr = assignedById != null ? String(assignedById).trim() : '';
+  const minDate = redistributionDate ? new Date(redistributionDate).getTime() : -Infinity;
   const dates = [];
+  const addIfAfterRedist = (t) => {
+    if (t && new Date(t).getTime() >= minDate) dates.push(norm(t));
+  };
 
   // 1. კომენტარები – მხოლოდ პასუხისმგებლის მიერ დაწერილი
   try {
@@ -246,8 +250,7 @@ async function fetchFirstCommDate(dealId, assignedById) {
       for (const c of commentData.result) {
         const authorId = c.AUTHOR_ID != null ? String(c.AUTHOR_ID).trim() : '';
         if (assignedByStr && authorId === assignedByStr) {
-          const t = norm(c.CREATED);
-          if (t) dates.push(t);
+          addIfAfterRedist(c.CREATED);
           break;
         }
       }
@@ -274,8 +277,7 @@ async function fetchFirstCommDate(dealId, assignedById) {
       const activityData = activityRes.data || {};
       if (!activityData.error && activityData.result && activityData.result.length > 0) {
         const first = activityData.result[0];
-        const t = norm(first.CREATED || first.START_TIME);
-        if (t) dates.push(t);
+        addIfAfterRedist(first.CREATED || first.START_TIME);
       }
     } catch (e) {
       console.warn('Activity (outbound call) fetch for deal', dealId, 'failed:', e.message);
@@ -299,14 +301,13 @@ async function fetchFirstCommDate(dealId, assignedById) {
       if (it.TYPE_ID !== 1) {
         const t = it.CREATED_TIME || it.CREATED;
         if (t) {
-          dates.push(norm(t));
+          addIfAfterRedist(t);
           break;
         }
       }
     }
     if (dates.length === 0 && items.length > 1 && items[1]) {
-      const t = items[1].CREATED_TIME || items[1].CREATED;
-      if (t) dates.push(norm(t));
+      addIfAfterRedist(items[1].CREATED_TIME || items[1].CREATED);
     }
   } catch (e) {
     console.warn('Stage history fetch for deal', dealId, 'failed:', e.message);
@@ -324,7 +325,8 @@ async function fetchFirstCommDatesForDeals(deals) {
     const id = String(norm(d.ID) || '').trim();
     if (!id) continue;
     const assignedById = d.ASSIGNED_BY_ID != null ? String(d.ASSIGNED_BY_ID).trim() : '';
-    map[id] = await fetchFirstCommDate(id, assignedById || null);
+    const redistributionDate = d[REQUIRED_FIELD] ? norm(d[REQUIRED_FIELD]) : null;
+    map[id] = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
     if ((i + 1) % 5 === 0) await sleep(100);
   }
   return map;
