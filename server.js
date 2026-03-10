@@ -807,7 +807,7 @@ function renderShell(dateFrom, dateTo) {
         return reader.read().then(function processChunk(result) {
           if (result.done) return;
           buf += decoder.decode(result.value, { stream: true });
-          var lines = buf.split('\\n');
+          var lines = buf.split(/\\r?\\n/);
           buf = lines.pop();
           for (var i = 0; i < lines.length; i++) {
             var line = lines[i].trim();
@@ -817,7 +817,10 @@ function renderShell(dateFrom, dateTo) {
               if (obj.type === 'progress') {
                 setProgress(obj.value, obj.label || 'ჩატვირთვა...');
               } else if (obj.type === 'html') {
-                frame.srcdoc = obj.content;
+                var blob = new Blob([obj.content], { type: 'text/html; charset=utf-8' });
+                var blobUrl = URL.createObjectURL(blob);
+                frame.src = blobUrl;
+                frame.onload = function() { URL.revokeObjectURL(blobUrl); };
                 hideLoader();
                 return;
               } else if (obj.type === 'error') {
