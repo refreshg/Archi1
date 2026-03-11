@@ -38,6 +38,27 @@ const PHONE_MATCH_FIELD = 'UF_CRM_5E5E926786D76';
 const MOTKHOVNA_FIELD = 'UF_CRM_5F2A7F2C0F9C9'; // მოთხოვნა (dropdown)
 const SERVICE_LEADS_FIELD = 'UF_CRM_1707196806355'; // Service Leads
 const DELAY_MS = 500;
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+const reportCache = new Map();
+
+function getCacheKey(dateFrom, dateTo) {
+  return `${dateFrom}|${dateTo}`;
+}
+
+function setReportCache(key, value) {
+  reportCache.set(key, { ...value, createdAt: Date.now() });
+}
+
+function getReportCache(key) {
+  const entry = reportCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > CACHE_TTL_MS) {
+    reportCache.delete(key);
+    return null;
+  }
+  return entry;
+}
 
 // Bitrix24 deal URL (clicking a row opens the deal)
 const BITRIX_DEAL_URL = 'https://crm.archi.ge/crm/deal/details';
@@ -247,17 +268,28 @@ async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
     if (t && new Date(t).getTime() >= minDate) dates.push(norm(t));
   };
 
-  // 1. კომენტარები – მხოლოდ პასუხისმგებლის მიერ დაწერილი
+  const SKIP_COMMENT_TEXT = 'Sale Lead Create (Observe)';
+  const isSkipComment = (c) => {
+    const text = (c.COMMENT ?? c.TEXT ?? c.MESSAGE ?? '').toString().trim();
+    return text === SKIP_COMMENT_TEXT || text.includes(SKIP_COMMENT_TEXT);
+  };
+
+  let firstCommentText = null;
+  // 1. კომენტარები – მხოლოდ პასუხისმგებლის მიერ დაწერილი; პირველი კომენტარის ტექსტი (ნებისმიერი ავტორი, "Sale Lead Create (Observe)" არ ჩაითვლება)
   try {
     const commentRes = await axios.post(BITRIX_BASE + '/crm.timeline.comment.list.json', {
       filter: { ENTITY_TYPE: 'deal', ENTITY_ID: String(dealId) },
-      select: ['CREATED', 'AUTHOR_ID'],
+      select: ['CREATED', 'AUTHOR_ID', 'COMMENT'],
       order: { CREATED: 'ASC' },
       start: 0,
     });
     const commentData = commentRes.data || {};
     if (!commentData.error && commentData.result && Array.isArray(commentData.result)) {
-      for (const c of commentData.result) {
+      const comments = commentData.result;
+      for (const c of comments) {
+        if (isSkipComment(c)) continue;
+        const text = (c.COMMENT ?? c.TEXT ?? c.MESSAGE ?? '').toString().trim();
+        if (firstCommentText === null) firstCommentText = text || null;
         const authorId = c.AUTHOR_ID != null ? String(c.AUTHOR_ID).trim() : '';
         if (assignedByStr && authorId === assignedByStr) {
           addIfAfterRedist(c.CREATED);
@@ -383,15 +415,15 @@ async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
     console.warn('Stage history fetch for deal', dealId, 'failed:', e.message);
   }
 
-  if (dates.length === 0) return null;
-  dates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-  return dates[0];
+  const firstCommDate = dates.length === 0 ? null : (dates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime()), dates[0]);
+  return { firstCommDate, firstCommentText: firstCommentText || null };
 }
 
 async function fetchFirstCommDatesForDeals(deals, onProgress) {
-  const map = {};
+  const firstCommMap = {};
+  const firstCommentMap = {};
   const total = deals.length;
-  if (total === 0) return map;
+  if (total === 0) return { firstCommMap, firstCommentMap };
 
   const concurrency = Math.min(8, Math.max(1, Math.floor(total / 10) || 4));
   let index = 0;
@@ -406,7 +438,9 @@ async function fetchFirstCommDatesForDeals(deals, onProgress) {
       if (!id) continue;
       const assignedById = d.ASSIGNED_BY_ID != null ? String(d.ASSIGNED_BY_ID).trim() : '';
       const redistributionDate = d[REQUIRED_FIELD] ? norm(d[REQUIRED_FIELD]) : null;
-      map[id] = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
+      const { firstCommDate, firstCommentText } = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
+      firstCommMap[id] = firstCommDate;
+      firstCommentMap[id] = firstCommentText;
       completed += 1;
       if (onProgress && total > 0) {
         onProgress(Math.round((completed / total) * 100));
@@ -423,7 +457,7 @@ async function fetchFirstCommDatesForDeals(deals, onProgress) {
     workers.push(worker());
   }
   await Promise.all(workers);
-  return map;
+  return { firstCommMap, firstCommentMap };
 }
 
 async function fetchUserNames(userIds) {
@@ -460,7 +494,7 @@ function buildReport(deals) {
   return { metricA, metricB, percentage, deals: filtered };
 }
 
-function buildRows(deals, stageMap, userMap, firstCommMap, motkhovnaListMap) {
+function buildRows(deals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap) {
   return deals.map((d) => {
     const id = norm(d.ID) || '-';
     const title = norm(d.TITLE) || '(უსახელო)';
@@ -475,9 +509,10 @@ function buildRows(deals, stageMap, userMap, firstCommMap, motkhovnaListMap) {
     const dateCreate = formatDate(d.DATE_CREATE);
     const redistributionDate = formatDate(d[REQUIRED_FIELD]);
     const firstCommDate = formatDate((firstCommMap && firstCommMap[id]) || null);
+    const firstComment = (firstCommentMap && firstCommentMap[id]) ? String(firstCommentMap[id]).trim() : '-';
     const motkhovna = getDropdownValue(d[MOTKHOVNA_FIELD], motkhovnaListMap) || '-';
     const dealUrl = `${BITRIX_DEAL_URL}/${id}/`;
-    return { id, title, stageName, assignedByName, createdByName, dateCreate, redistributionDate, firstCommDate, motkhovna, dealUrl };
+    return { id, title, stageName, assignedByName, createdByName, dateCreate, redistributionDate, firstCommDate, firstComment, motkhovna, dealUrl };
   });
 }
 
@@ -596,7 +631,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
         </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>მოთხოვნა</th></tr>
+            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
@@ -629,7 +664,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
         </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>მოთხოვნა</th></tr>
+            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBodyService"></tbody>
         </table>
@@ -664,7 +699,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 
       tbody.innerHTML = '';
       if (pageRows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9">დილები არ მოიძებნა</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10">დილები არ მოიძებნა</td></tr>';
       } else {
         pageRows.forEach(function(r) {
           var tr = document.createElement('tr');
@@ -726,13 +761,13 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 
     function renderTable() {
       renderPagination('tableBody', 'pagination', ROWS, PAGE_SIZE, currentPage, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
+        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
 
     function renderTableService() {
       renderPagination('tableBodyService', 'paginationService', SERVICE_ROWS, PAGE_SIZE_SERVICE, currentPageService, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
+        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
 
@@ -963,10 +998,10 @@ app.get('/api/report', async (req, res) => {
         allDealsForComm.push(d);
       }
     }
-    const firstCommMap = await fetchFirstCommDatesForDeals(allDealsForComm);
+    const { firstCommMap, firstCommentMap } = await fetchFirstCommDatesForDeals(allDealsForComm);
 
-    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
-    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
+    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
     res.status(200).send(renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo));
   } catch (err) {
     console.error(err);
@@ -989,6 +1024,7 @@ app.get('/api/report-stream', async (req, res) => {
 
   try {
     const { dateFrom, dateTo } = getDateParams(req);
+    const cacheKey = getCacheKey(dateFrom, dateTo);
     send({ type: 'progress', value: 5, label: 'დილების ჩატვირთვა...' });
 
     const [deals, serviceDeals] = await Promise.all([
@@ -1026,14 +1062,15 @@ app.get('/api/report-stream', async (req, res) => {
       }
     }
 
-    const firstCommMap = await fetchFirstCommDatesForDeals(allDealsForComm, (pct) => {
+    const { firstCommMap, firstCommentMap } = await fetchFirstCommDatesForDeals(allDealsForComm, (pct) => {
       const v = 40 + Math.round((pct / 100) * 45);
       send({ type: 'progress', value: Math.min(v, 85), label: 'პირველი კომუნიკაციის თარიღები...' });
     });
     send({ type: 'progress', value: 90, label: 'ფინალიზაცია...' });
 
-    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
-    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const rows = buildRows(report.deals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
+    const serviceRows = buildRows(serviceReport.deals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
+    setReportCache(cacheKey, { report, serviceReport, stageMap, userMap, motkhovnaListMap, firstCommMap, firstCommentMap, deals, serviceDeals });
     const html = renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo);
     send({ type: 'progress', value: 100, label: 'მზადაა' });
     send({ type: 'html', content: html });
@@ -1049,34 +1086,70 @@ app.get('/export', async (req, res) => {
   try {
     const { dateFrom, dateTo } = getDateParams(req);
     const isServiceLeads = req.query.tab === 'serviceleads';
-    const [deals, serviceDeals] = await Promise.all([
-      fetchAllDeals(dateFrom, dateTo),
-      fetchServiceLeadsDeals(dateFrom, dateTo),
-    ]);
-    const report = buildReport(deals);
-    const serviceReport = buildReport(serviceDeals);
-    const allDeals = isServiceLeads ? serviceReport.deals : report.deals;
-    const userIds = new Set();
-    for (const d of allDeals) {
-      const a = norm(d.ASSIGNED_BY_ID);
-      if (a) userIds.add(a);
-      let c = d[CREATED_BY_FIELD];
-      if (c && typeof c === 'object' && c.id != null) c = c.id;
-      if (Array.isArray(c)) c = c[0];
-      if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+    const cacheKey = getCacheKey(dateFrom, dateTo);
+    let cached = getReportCache(cacheKey);
+
+    let report;
+    let serviceReport;
+    let stageMap;
+    let userMap;
+    let motkhovnaListMap;
+    let firstCommMap;
+    let firstCommentMap;
+    let allDeals;
+
+    if (cached) {
+      report = cached.report;
+      serviceReport = cached.serviceReport;
+      stageMap = cached.stageMap;
+      userMap = cached.userMap;
+      motkhovnaListMap = cached.motkhovnaListMap;
+      firstCommMap = cached.firstCommMap;
+      firstCommentMap = cached.firstCommentMap || {};
+      allDeals = isServiceLeads ? serviceReport.deals : report.deals;
+    } else {
+      const [deals, serviceDeals] = await Promise.all([
+        fetchAllDeals(dateFrom, dateTo),
+        fetchServiceLeadsDeals(dateFrom, dateTo),
+      ]);
+      report = buildReport(deals);
+      serviceReport = buildReport(serviceDeals);
+      allDeals = isServiceLeads ? serviceReport.deals : report.deals;
+      const userIds = new Set();
+      for (const d of [...report.deals, ...serviceReport.deals]) {
+        const a = norm(d.ASSIGNED_BY_ID);
+        if (a) userIds.add(a);
+        let c = d[CREATED_BY_FIELD];
+        if (c && typeof c === 'object' && c.id != null) c = c.id;
+        if (Array.isArray(c)) c = c[0];
+        if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+      }
+
+      [stageMap, userMap, motkhovnaListMap] = await Promise.all([
+        fetchDealStages(),
+        fetchUserNames([...userIds]),
+        fetchMotkhovnaListMap(),
+      ]);
+
+      const seenIds = new Set();
+      const allDealsForComm = [];
+      for (const d of [...report.deals, ...serviceReport.deals]) {
+        const id = String(norm(d.ID) || '').trim();
+        if (id && !seenIds.has(id)) {
+          seenIds.add(id);
+          allDealsForComm.push(d);
+        }
+      }
+      const fetched = await fetchFirstCommDatesForDeals(allDealsForComm);
+      firstCommMap = fetched.firstCommMap;
+      firstCommentMap = fetched.firstCommentMap;
+      setReportCache(cacheKey, { report, serviceReport, stageMap, userMap, motkhovnaListMap, firstCommMap, firstCommentMap, deals, serviceDeals });
     }
 
-    const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
-      fetchDealStages(),
-      fetchUserNames([...userIds]),
-      fetchMotkhovnaListMap(),
-    ]);
-
-    const firstCommMap = await fetchFirstCommDatesForDeals(allDeals);
-    const rows = buildRows(allDeals, stageMap, userMap, firstCommMap, motkhovnaListMap);
+    const rows = buildRows(allDeals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
     const data = [
-      ['ID', 'სახელწოდება', 'ვინ შექმნა', 'პასუხისმგებელი', 'ეტაპი', 'შექმნის თარიღი', 'გადანაწილების თარიღი', 'პირველი კომუნიკაცია', 'მოთხოვნა'],
-      ...rows.map((r) => [r.id, r.title, r.createdByName, r.assignedByName, r.stageName, r.dateCreate, r.redistributionDate, r.firstCommDate, r.motkhovna]),
+      ['ID', 'სახელწოდება', 'ვინ შექმნა', 'პასუხისმგებელი', 'ეტაპი', 'შექმნის თარიღი', 'გადანაწილების თარიღი', 'პირველი კომუნიკაცია', 'პირველი კომენტარი', 'მოთხოვნა'],
+      ...rows.map((r) => [r.id, r.title, r.createdByName, r.assignedByName, r.stageName, r.dateCreate, r.redistributionDate, r.firstCommDate, r.firstComment, r.motkhovna]),
     ];
 
     const wb = XLSX.utils.book_new();
