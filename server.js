@@ -546,10 +546,11 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
     .card-value { font-size:24px; font-weight:600; color:#111; }
     .card-value.accent { color:#2563eb; }
     .footer { font-size:12px; color:#9ca3af; margin-top:16px; }
-    .table-wrap { margin-top:24px; overflow-x:auto; }
-    table { width:100%; border-collapse:collapse; font-size:14px; }
-    th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #e5e7eb; }
-    th { background:#f9fafb; font-weight:600; color:#374151; }
+    .table-wrap { margin-top:24px; overflow:visible; }
+    table { width:100%; border-collapse:collapse; font-size:11px; }
+    th, td { padding:6px 8px; text-align:left; border-bottom:1px solid #e5e7eb; vertical-align:top; }
+    th { background:#f9fafb; font-weight:600; color:#374151; white-space:nowrap; }
+    td { word-wrap:break-word; overflow-wrap:break-word; white-space:normal; }
     tr:hover { background:#f9fafb; }
     tr { cursor:pointer; }
     a { color:#2563eb; text-decoration:none; }
