@@ -18,9 +18,17 @@ const BITRIX_WEBHOOK_URL = BITRIX_BASE + '/crm.deal.list.json';
 
 const CREATED_BY_FIELD = 'UF_CRM_1599505987'; // ვინ შექმნა
 
-const DEFAULT_DATE_FROM = '2025-01-01';
-const DEFAULT_DATE_TO = '2025-02-28';
 const CATEGORY_ID = '0';
+function getDefaultDateRange() {
+  const now = new Date();
+  const to = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const from = new Date(to);
+  from.setDate(from.getDate() - 30);
+  return {
+    dateFrom: from.toISOString().slice(0, 10),
+    dateTo: to.toISOString().slice(0, 10),
+  };
+}
 const FLAG_FIELD = 'UF_CRM_1707970657822';
 const REQUIRED_FIELD = 'UF_CRM_1604662888308';
 const INITIAL_STAGE_ID = 'NEW';
@@ -96,8 +104,9 @@ function hasRequiredField(value) {
 }
 
 async function fetchAllDeals(dateFrom, dateTo) {
-  const from = (dateFrom || DEFAULT_DATE_FROM) + 'T00:00:00';
-  const to = (dateTo || DEFAULT_DATE_TO) + 'T23:59:59';
+  const def = getDefaultDateRange();
+  const from = (dateFrom || def.dateFrom) + 'T00:00:00';
+  const to = (dateTo || def.dateTo) + 'T23:59:59';
   const allDeals = [];
   let start = 0;
   let page = 0;
@@ -145,8 +154,9 @@ async function fetchAllDeals(dateFrom, dateTo) {
 }
 
 async function fetchServiceLeadsDeals(dateFrom, dateTo) {
-  const from = (dateFrom || DEFAULT_DATE_FROM) + 'T00:00:00';
-  const to = (dateTo || DEFAULT_DATE_TO) + 'T23:59:59';
+  const def = getDefaultDateRange();
+  const from = (dateFrom || def.dateFrom) + 'T00:00:00';
+  const to = (dateTo || def.dateTo) + 'T23:59:59';
   const allDeals = [];
   let start = 0;
   let page = 0;
@@ -381,16 +391,38 @@ async function fetchFirstCommDate(dealId, assignedById, redistributionDate) {
 async function fetchFirstCommDatesForDeals(deals, onProgress) {
   const map = {};
   const total = deals.length;
-  for (let i = 0; i < deals.length; i++) {
-    const d = deals[i];
-    const id = String(norm(d.ID) || '').trim();
-    if (!id) continue;
-    const assignedById = d.ASSIGNED_BY_ID != null ? String(d.ASSIGNED_BY_ID).trim() : '';
-    const redistributionDate = d[REQUIRED_FIELD] ? norm(d[REQUIRED_FIELD]) : null;
-    map[id] = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
-    if (onProgress && total > 0) onProgress(Math.round(((i + 1) / total) * 100));
-    if ((i + 1) % 5 === 0) await sleep(100);
+  if (total === 0) return map;
+
+  const concurrency = Math.min(8, Math.max(1, Math.floor(total / 10) || 4));
+  let index = 0;
+  let completed = 0;
+
+  async function worker() {
+    while (true) {
+      const i = index++;
+      if (i >= total) break;
+      const d = deals[i];
+      const id = String(norm(d.ID) || '').trim();
+      if (!id) continue;
+      const assignedById = d.ASSIGNED_BY_ID != null ? String(d.ASSIGNED_BY_ID).trim() : '';
+      const redistributionDate = d[REQUIRED_FIELD] ? norm(d[REQUIRED_FIELD]) : null;
+      map[id] = await fetchFirstCommDate(id, assignedById || null, redistributionDate);
+      completed += 1;
+      if (onProgress && total > 0) {
+        onProgress(Math.round((completed / total) * 100));
+      }
+      if (completed % 20 === 0) {
+        await sleep(100);
+      }
+    }
   }
+
+  const workers = [];
+  const workerCount = Math.min(concurrency, total);
+  for (let i = 0; i < workerCount; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
   return map;
 }
 
@@ -452,8 +484,9 @@ function buildRows(deals, stageMap, userMap, firstCommMap, motkhovnaListMap) {
 function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows, dateFrom, dateTo) {
   const { metricA, metricB, percentage } = report;
   const svc = serviceReport || { metricA: 0, metricB: 0, percentage: 0 };
-  const from = dateFrom || DEFAULT_DATE_FROM;
-  const to = dateTo || DEFAULT_DATE_TO;
+  const def = getDefaultDateRange();
+  const from = dateFrom || def.dateFrom;
+  const to = dateTo || def.dateTo;
   const rowsJson = JSON.stringify(rows);
   const serviceRowsJson = JSON.stringify(serviceRows || []);
 
@@ -713,14 +746,32 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
       });
     });
 
+    function getSelectedDates() {
+      var df = document.querySelector('[name="date_from"]');
+      var dt = document.querySelector('[name="date_to"]');
+      var from = (df && df.value) ? df.value : '${escapeHtml(from)}';
+      var to = (dt && dt.value) ? dt.value : '${escapeHtml(to)}';
+      if (from > to) { var t = from; from = to; to = t; }
+      return { from: from, to: to };
+    }
+
+    function requestExport(tab) {
+      var d = getSelectedDates();
+      if (window.parent !== window) {
+        window.parent.postMessage({ type: 'export', date_from: d.from, date_to: d.to, tab: tab || '' }, '*');
+      } else {
+        var url = '/export?date_from=' + encodeURIComponent(d.from) + '&date_to=' + encodeURIComponent(d.to);
+        if (tab) url += '&tab=' + encodeURIComponent(tab);
+        window.open(url, '_blank');
+      }
+    }
+
     document.getElementById('btnExport').onclick = function() {
-      var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}';
-      window.open('/export' + qs, '_blank');
+      requestExport('');
     };
 
     document.getElementById('btnExportService').onclick = function() {
-      var qs = window.location.search || '?date_from=${escapeHtml(from)}&date_to=${escapeHtml(to)}&tab=serviceleads';
-      window.open('/export' + qs, '_blank');
+      requestExport('serviceleads');
     };
 
     renderTable();
@@ -742,17 +793,19 @@ function escapeHtml(str) {
 }
 
 function getDateParams(req) {
-  let from = (req.query.date_from || DEFAULT_DATE_FROM).toString().trim();
-  let to = (req.query.date_to || DEFAULT_DATE_TO).toString().trim();
-  from = from || DEFAULT_DATE_FROM;
-  to = to || DEFAULT_DATE_TO;
+  const def = getDefaultDateRange();
+  let from = (req.query.date_from || def.dateFrom).toString().trim();
+  let to = (req.query.date_to || def.dateTo).toString().trim();
+  from = from || def.dateFrom;
+  to = to || def.dateTo;
   if (from > to) [from, to] = [to, from];
   return { dateFrom: from, dateTo: to };
 }
 
 function renderShell(dateFrom, dateTo) {
-  const from = dateFrom || DEFAULT_DATE_FROM;
-  const to = dateTo || DEFAULT_DATE_TO;
+  const def = getDefaultDateRange();
+  const from = dateFrom || def.dateFrom;
+  const to = dateTo || def.dateTo;
   return `
 <!DOCTYPE html>
 <html lang="ka">
@@ -800,15 +853,23 @@ function renderShell(dateFrom, dateTo) {
     setProgress(0, 'ჩატვირთვა...');
 
     window.addEventListener('message', function(event) {
-      if (event.data && event.data.type === 'reportDateChange' && event.data.date_from && event.data.date_to) {
+      if (!event.data || !event.data.type) return;
+      if (event.data.type === 'reportDateChange' && event.data.date_from && event.data.date_to) {
         window.location.href = '/?date_from=' + encodeURIComponent(event.data.date_from) + '&date_to=' + encodeURIComponent(event.data.date_to);
+        return;
+      }
+      if (event.data.type === 'export' && event.data.date_from && event.data.date_to) {
+        var url = '/export?date_from=' + encodeURIComponent(event.data.date_from) + '&date_to=' + encodeURIComponent(event.data.date_to);
+        if (event.data.tab) url += '&tab=' + encodeURIComponent(event.data.tab);
+        window.open(url, '_blank');
+        return;
       }
     });
 
     function getStreamUrl() {
       var params = new URLSearchParams(window.location.search);
-      var from = params.get('date_from') || '${escapeHtml(DEFAULT_DATE_FROM)}';
-      var to = params.get('date_to') || '${escapeHtml(DEFAULT_DATE_TO)}';
+      var from = params.get('date_from') || '${escapeHtml(from)}';
+      var to = params.get('date_to') || '${escapeHtml(to)}';
       if (from > to) { var t = from; from = to; to = t; }
       return '/api/report-stream?date_from=' + encodeURIComponent(from) + '&date_to=' + encodeURIComponent(to);
     }
