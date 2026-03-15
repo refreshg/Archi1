@@ -503,15 +503,10 @@ function buildRows(deals, stageMap, userMap, firstCommMap, firstCommentMap, motk
     const stageName = stageMap[stageId] || stageId;
     const assignedBy = norm(d.ASSIGNED_BY_ID) || '';
     const assignedByName = assignedBy ? (userMap[assignedBy] || assignedBy) : '-';
-    let createdByName = (d[CREATED_BY_NAME_FIELD] != null && String(d[CREATED_BY_NAME_FIELD]).trim() !== '')
+    const createdByRaw = (d[CREATED_BY_NAME_FIELD] != null && String(d[CREATED_BY_NAME_FIELD]).trim() !== '')
       ? String(d[CREATED_BY_NAME_FIELD]).trim()
-      : null;
-    if (createdByName === null) {
-      let createdBy = d[CREATED_BY_FIELD];
-      if (createdBy && typeof createdBy === 'object' && createdBy.id != null) createdBy = createdBy.id;
-      createdBy = norm(createdBy) || '';
-      createdByName = createdBy ? (userMap[createdBy] || createdBy) : '-';
-    }
+      : '';
+    const createdByName = createdByRaw === '' ? '-' : (/^\d+$/.test(createdByRaw) ? (userMap[createdByRaw] || createdByRaw) : createdByRaw);
     const dateCreate = formatDate(d.DATE_CREATE);
     const redistributionDate = formatDate(d[REQUIRED_FIELD]);
     const firstCommDate = formatDate((firstCommMap && firstCommMap[id]) || null);
@@ -988,6 +983,8 @@ app.get('/api/report', async (req, res) => {
       if (c && typeof c === 'object' && c.id != null) c = c.id;
       if (Array.isArray(c)) c = c[0];
       if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+      const nameField = d[CREATED_BY_NAME_FIELD];
+      if (nameField != null && /^\d+$/.test(String(nameField).trim())) userIds.add(String(nameField).trim());
     }
 
     const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
@@ -1050,6 +1047,8 @@ app.get('/api/report-stream', async (req, res) => {
       if (c && typeof c === 'object' && c.id != null) c = c.id;
       if (Array.isArray(c)) c = c[0];
       if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+      const nameField = d[CREATED_BY_NAME_FIELD];
+      if (nameField != null && /^\d+$/.test(String(nameField).trim())) userIds.add(String(nameField).trim());
     }
 
     const [stageMap, userMap, motkhovnaListMap] = await Promise.all([
@@ -1130,6 +1129,8 @@ app.get('/export', async (req, res) => {
         if (c && typeof c === 'object' && c.id != null) c = c.id;
         if (Array.isArray(c)) c = c[0];
         if (c != null && c !== '' && /^\d+$/.test(String(c).trim())) userIds.add(String(c).trim());
+        const nameField = d[CREATED_BY_NAME_FIELD];
+        if (nameField != null && /^\d+$/.test(String(nameField).trim())) userIds.add(String(nameField).trim());
       }
 
       [stageMap, userMap, motkhovnaListMap] = await Promise.all([
