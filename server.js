@@ -40,6 +40,8 @@ const MOTKHOVNA_FIELD = 'UF_CRM_5F2A7F2C0F9C9'; // მოთხოვნა (dro
 const SERVICE_LEADS_FIELD = 'UF_CRM_1707196806355'; // Service Leads
 const DELAY_MS = 500;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+/** ექსპორტში დილების ამ რაოდენობაზე მეტისას პირველი კომუნიკაცია/კომენტარი არ იხმარს (სწრაფი ჩამოტვირთვა) */
+const EXPORT_SKIP_FIRST_COMM_OVER = 350;
 
 const reportCache = new Map();
 
@@ -1148,9 +1150,14 @@ app.get('/export', async (req, res) => {
           allDealsForComm.push(d);
         }
       }
-      const fetched = await fetchFirstCommDatesForDeals(allDealsForComm);
-      firstCommMap = fetched.firstCommMap;
-      firstCommentMap = fetched.firstCommentMap;
+      if (allDealsForComm.length <= EXPORT_SKIP_FIRST_COMM_OVER) {
+        const fetched = await fetchFirstCommDatesForDeals(allDealsForComm);
+        firstCommMap = fetched.firstCommMap;
+        firstCommentMap = fetched.firstCommentMap;
+      } else {
+        firstCommMap = {};
+        firstCommentMap = {};
+      }
       setReportCache(cacheKey, { report, serviceReport, stageMap, userMap, motkhovnaListMap, firstCommMap, firstCommentMap, deals, serviceDeals });
     }
 
