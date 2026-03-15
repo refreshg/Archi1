@@ -16,7 +16,8 @@ const PORT = 3000;
 const BITRIX_BASE = 'https://crm.archi.ge/rest/1/1tol0pczy0mvbzmu';
 const BITRIX_WEBHOOK_URL = BITRIX_BASE + '/crm.deal.list.json';
 
-const CREATED_BY_FIELD = 'UF_CRM_1599505987'; // ვინ შექმნა
+const CREATED_BY_FIELD = 'UF_CRM_1599505987'; // ვინ შექმნა (fallback – user ID)
+const CREATED_BY_NAME_FIELD = 'UF_CRM_1673261686'; // ვინ შექმნა – სახელი გვარი (პირადი)
 
 const CATEGORY_ID = '0';
 function getDefaultDateRange() {
@@ -141,7 +142,7 @@ async function fetchAllDeals(dateFrom, dateTo) {
         '<=DATE_CREATE': to,
         [FLAG_FIELD]: '1',
       },
-      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
+      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, CREATED_BY_NAME_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
       start,
     };
 
@@ -191,7 +192,7 @@ async function fetchServiceLeadsDeals(dateFrom, dateTo) {
         '<=DATE_CREATE': to,
         [SERVICE_LEADS_FIELD]: 1,
       },
-      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
+      select: ['ID', 'TITLE', 'STAGE_ID', 'DATE_CREATE', 'ASSIGNED_BY_ID', CREATED_BY_FIELD, CREATED_BY_NAME_FIELD, FLAG_FIELD, REQUIRED_FIELD, PHONE_MATCH_FIELD, MOTKHOVNA_FIELD],
       start,
     };
 
@@ -502,10 +503,15 @@ function buildRows(deals, stageMap, userMap, firstCommMap, firstCommentMap, motk
     const stageName = stageMap[stageId] || stageId;
     const assignedBy = norm(d.ASSIGNED_BY_ID) || '';
     const assignedByName = assignedBy ? (userMap[assignedBy] || assignedBy) : '-';
-    let createdBy = d[CREATED_BY_FIELD];
-    if (createdBy && typeof createdBy === 'object' && createdBy.id != null) createdBy = createdBy.id;
-    createdBy = norm(createdBy) || '';
-    const createdByName = createdBy ? (userMap[createdBy] || createdBy) : '-';
+    let createdByName = (d[CREATED_BY_NAME_FIELD] != null && String(d[CREATED_BY_NAME_FIELD]).trim() !== '')
+      ? String(d[CREATED_BY_NAME_FIELD]).trim()
+      : null;
+    if (createdByName === null) {
+      let createdBy = d[CREATED_BY_FIELD];
+      if (createdBy && typeof createdBy === 'object' && createdBy.id != null) createdBy = createdBy.id;
+      createdBy = norm(createdBy) || '';
+      createdByName = createdBy ? (userMap[createdBy] || createdBy) : '-';
+    }
     const dateCreate = formatDate(d.DATE_CREATE);
     const redistributionDate = formatDate(d[REQUIRED_FIELD]);
     const firstCommDate = formatDate((firstCommMap && firstCommMap[id]) || null);
@@ -632,7 +638,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
         </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
+            <tr><th>ვინ შექმნა</th><th>ID</th><th>სახელწოდება</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
@@ -665,7 +671,7 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
         </div>
         <table>
           <thead>
-            <tr><th>ID</th><th>სახელწოდება</th><th>ვინ შექმნა</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
+            <tr><th>ვინ შექმნა</th><th>ID</th><th>სახელწოდება</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBodyService"></tbody>
         </table>
@@ -762,13 +768,13 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
 
     function renderTable() {
       renderPagination('tableBody', 'pagination', ROWS, PAGE_SIZE, currentPage, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
+        return '<td>' + escapeHtml(r.createdByName) + '</td><td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
 
     function renderTableService() {
       renderPagination('tableBodyService', 'paginationService', SERVICE_ROWS, PAGE_SIZE_SERVICE, currentPageService, function(r) {
-        return '<td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.createdByName) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
+        return '<td>' + escapeHtml(r.createdByName) + '</td><td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
       });
     }
 
@@ -1149,8 +1155,8 @@ app.get('/export', async (req, res) => {
 
     const rows = buildRows(allDeals, stageMap, userMap, firstCommMap, firstCommentMap, motkhovnaListMap);
     const data = [
-      ['ID', 'სახელწოდება', 'ვინ შექმნა', 'პასუხისმგებელი', 'ეტაპი', 'შექმნის თარიღი', 'გადანაწილების თარიღი', 'პირველი კომუნიკაცია', 'პირველი კომენტარი', 'მოთხოვნა'],
-      ...rows.map((r) => [r.id, r.title, r.createdByName, r.assignedByName, r.stageName, r.dateCreate, r.redistributionDate, r.firstCommDate, r.firstComment, r.motkhovna]),
+      ['ვინ შექმნა', 'ID', 'სახელწოდება', 'პასუხისმგებელი', 'ეტაპი', 'შექმნის თარიღი', 'გადანაწილების თარიღი', 'პირველი კომუნიკაცია', 'პირველი კომენტარი', 'მოთხოვნა'],
+      ...rows.map((r) => [r.createdByName, r.id, r.title, r.assignedByName, r.stageName, r.dateCreate, r.redistributionDate, r.firstCommDate, r.firstComment, r.motkhovna]),
     ];
 
     const wb = XLSX.utils.book_new();
