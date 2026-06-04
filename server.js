@@ -549,11 +549,20 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
     .card-value { font-size:24px; font-weight:600; color:#111; }
     .card-value.accent { color:#2563eb; }
     .footer { font-size:12px; color:#9ca3af; margin-top:16px; }
-    .table-wrap { margin-top:24px; overflow:visible; }
-    table { width:100%; border-collapse:collapse; font-size:11px; }
-    th, td { padding:6px 8px; text-align:left; border-bottom:1px solid #e5e7eb; vertical-align:top; }
-    th { background:#f9fafb; font-weight:600; color:#374151; white-space:nowrap; }
-    td { word-wrap:break-word; overflow-wrap:break-word; white-space:normal; }
+    .table-wrap { margin-top:24px; overflow-x:auto; }
+    table.deals-table { width:100%; border-collapse:collapse; font-size:11px; table-layout:fixed; min-width:980px; }
+    table.deals-table th, table.deals-table td { padding:6px 8px; text-align:left; border-bottom:1px solid #e5e7eb; vertical-align:top; overflow:hidden; }
+    table.deals-table th { background:#f9fafb; font-weight:600; color:#374151; white-space:nowrap; }
+    table.deals-table td { word-break:normal; overflow-wrap:break-word; white-space:normal; line-height:1.35; }
+    table.deals-table .col-created { width:7%; }
+    table.deals-table .col-id { width:5%; }
+    table.deals-table .col-title { width:16%; }
+    table.deals-table .col-assigned { width:8%; }
+    table.deals-table .col-stage { width:9%; }
+    table.deals-table .col-date { width:8%; }
+    table.deals-table .col-comment { width:13%; }
+    table.deals-table .col-motkhovna { width:9%; max-width:110px; min-width:88px; }
+    table.deals-table th.col-motkhovna, table.deals-table td.col-motkhovna { word-break:normal; overflow-wrap:break-word; hyphens:none; }
     tr:hover { background:#f9fafb; }
     tr { cursor:pointer; }
     a { color:#2563eb; text-decoration:none; }
@@ -633,9 +642,13 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
             <button type="button" class="btn btn-primary" id="btnExport">ექსპორტი Excel</button>
           </div>
         </div>
-        <table>
+        <table class="deals-table">
+          <colgroup>
+            <col class="col-created" /><col class="col-id" /><col class="col-title" /><col class="col-assigned" /><col class="col-stage" />
+            <col class="col-date" /><col class="col-date" /><col class="col-date" /><col class="col-comment" /><col class="col-motkhovna" />
+          </colgroup>
           <thead>
-            <tr><th>ვინ შექმნა</th><th>ID</th><th>სახელწოდება</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
+            <tr><th class="col-created">ვინ შექმნა</th><th class="col-id">ID</th><th class="col-title">სახელწოდება</th><th class="col-assigned">პასუხისმგებელი</th><th class="col-stage">ეტაპი</th><th class="col-date">შექმნის თარიღი</th><th class="col-date">გადანაწილების თარიღი</th><th class="col-date">პირველი კომუნიკაცია</th><th class="col-comment">პირველი კომენტარი</th><th class="col-motkhovna">მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBody"></tbody>
         </table>
@@ -666,9 +679,13 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
             <button type="button" class="btn btn-primary" id="btnExportService">ექსპორტი Excel</button>
           </div>
         </div>
-        <table>
+        <table class="deals-table">
+          <colgroup>
+            <col class="col-created" /><col class="col-id" /><col class="col-title" /><col class="col-assigned" /><col class="col-stage" />
+            <col class="col-date" /><col class="col-date" /><col class="col-date" /><col class="col-comment" /><col class="col-motkhovna" />
+          </colgroup>
           <thead>
-            <tr><th>ვინ შექმნა</th><th>ID</th><th>სახელწოდება</th><th>პასუხისმგებელი</th><th>ეტაპი</th><th>შექმნის თარიღი</th><th>გადანაწილების თარიღი</th><th>პირველი კომუნიკაცია</th><th>პირველი კომენტარი</th><th>მოთხოვნა</th></tr>
+            <tr><th class="col-created">ვინ შექმნა</th><th class="col-id">ID</th><th class="col-title">სახელწოდება</th><th class="col-assigned">პასუხისმგებელი</th><th class="col-stage">ეტაპი</th><th class="col-date">შექმნის თარიღი</th><th class="col-date">გადანაწილების თარიღი</th><th class="col-date">პირველი კომუნიკაცია</th><th class="col-comment">პირველი კომენტარი</th><th class="col-motkhovna">მოთხოვნა</th></tr>
           </thead>
           <tbody id="tableBodyService"></tbody>
         </table>
@@ -763,16 +780,25 @@ function renderHtml(report, serviceReport, stageMap, userMap, rows, serviceRows,
       }
     }
 
+    function dealRowHtml(r) {
+      return '<td class="col-created">' + escapeHtml(r.createdByName) + '</td>'
+        + '<td class="col-id"><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td>'
+        + '<td class="col-title">' + escapeHtml(r.title) + '</td>'
+        + '<td class="col-assigned">' + escapeHtml(r.assignedByName) + '</td>'
+        + '<td class="col-stage">' + escapeHtml(r.stageName) + '</td>'
+        + '<td class="col-date">' + escapeHtml(r.dateCreate) + '</td>'
+        + '<td class="col-date">' + escapeHtml(r.redistributionDate) + '</td>'
+        + '<td class="col-date">' + escapeHtml(r.firstCommDate) + '</td>'
+        + '<td class="col-comment">' + escapeHtml(r.firstComment) + '</td>'
+        + '<td class="col-motkhovna">' + escapeHtml(r.motkhovna) + '</td>';
+    }
+
     function renderTable() {
-      renderPagination('tableBody', 'pagination', ROWS, PAGE_SIZE, currentPage, function(r) {
-        return '<td>' + escapeHtml(r.createdByName) + '</td><td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
-      });
+      renderPagination('tableBody', 'pagination', ROWS, PAGE_SIZE, currentPage, dealRowHtml);
     }
 
     function renderTableService() {
-      renderPagination('tableBodyService', 'paginationService', SERVICE_ROWS, PAGE_SIZE_SERVICE, currentPageService, function(r) {
-        return '<td>' + escapeHtml(r.createdByName) + '</td><td><a href="' + r.dealUrl + '" target="_blank" rel="noopener">' + escapeHtml(r.id) + '</a></td><td>' + escapeHtml(r.title) + '</td><td>' + escapeHtml(r.assignedByName) + '</td><td>' + escapeHtml(r.stageName) + '</td><td>' + escapeHtml(r.dateCreate) + '</td><td>' + escapeHtml(r.redistributionDate) + '</td><td>' + escapeHtml(r.firstCommDate) + '</td><td>' + escapeHtml(r.firstComment) + '</td><td>' + escapeHtml(r.motkhovna) + '</td>';
-      });
+      renderPagination('tableBodyService', 'paginationService', SERVICE_ROWS, PAGE_SIZE_SERVICE, currentPageService, dealRowHtml);
     }
 
     document.querySelectorAll('.tab-btn').forEach(function(btn) {
